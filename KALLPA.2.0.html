@@ -1,0 +1,1200 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Kallpa CRM — Gorras al por mayor y menor</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kallpa">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#3E5B25">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>body{margin:0}</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/* Almacenamiento local del navegador: los datos quedan guardados en este dispositivo */
+window.storage = {
+  async get(k){ const v = localStorage.getItem(k); if (v === null) throw new Error("no existe"); return { key: k, value: v }; },
+  async set(k, v){ localStorage.setItem(k, v); return { key: k, value: v }; },
+  async delete(k){ localStorage.removeItem(k); return { key: k, deleted: true }; },
+  async list(prefix = ""){ const keys = []; for (let i = 0; i < localStorage.length; i++){ const k = localStorage.key(i); if (k && k.startsWith(prefix)) keys.push(k); } return { keys }; }
+};
+</script>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* ============================================================
+   KALLPA CRM — Tienda de gorras (mayor y menor)
+   Colores de marca: verde oliva #3E5B25 sobre crema #F4F1E8
+   ============================================================ */
+
+const C = {
+  verde: "#3E5B25",
+  verdeOscuro: "#2A4016",
+  verdeClaro: "#6B8E4E",
+  verdeSuave: "#E3EAD8",
+  crema: "#F4F1E8",
+  hueso: "#FDFCF8",
+  tinta: "#1E2417",
+  gris: "#6E7263",
+  linea: "#DCD8C8",
+  ambar: "#C9972B",
+  ambarSuave: "#F6ECD6",
+  rojo: "#A94438",
+  rojoSuave: "#F4E2DF",
+};
+
+const DATA_KEY = "kallpa:data";
+const fmt = (n) =>
+  "Bs " + (Number(n) || 0).toLocaleString("es-BO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const hoy = () => new Date().toISOString().slice(0, 10);
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/* ---------- Logo Kallpa (SVG basado en el logotipo) ---------- */
+const Logo = ({ size = 44 }) => (
+  <svg width={size} height={size} viewBox="0 0 100 100" style={{ flexShrink: 0 }}>
+    <circle cx="50" cy="50" r="48" fill={C.crema} />
+    <text x="30" y="52" fontFamily="'Baloo 2','Arial Rounded MT Bold',sans-serif" fontWeight="800"
+      fontSize="52" fill={C.verde} textAnchor="middle">K</text>
+    <text x="58" y="86" fontFamily="'Baloo 2','Arial Rounded MT Bold',sans-serif" fontWeight="800"
+      fontSize="52" fill={C.verde} textAnchor="middle">P</text>
+  </svg>
+);
+
+/* ---------- Compresión de fotos (para subir desde el celular) ---------- */
+/* Se recorta a cuadrado centrado: así el encuadre es igual en Inventario,
+   Catálogo y cualquier miniatura, sin importar la proporción original de la foto. */
+const comprimirFoto = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("No se pudo leer la foto"));
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Formato de imagen no válido"));
+      img.onload = () => {
+        const lado = Math.min(img.width, img.height);
+        const sx = (img.width - lado) / 2;
+        const sy = (img.height - lado) / 2;
+        const destino = 640;
+        const canvas = document.createElement("canvas");
+        canvas.width = destino; canvas.height = destino;
+        canvas.getContext("2d").drawImage(img, sx, sy, lado, lado, 0, 0, destino, destino);
+        resolve(canvas.toDataURL("image/jpeg", 0.75));
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+/* ---------- Marca de agua con el logotipo de Kallpa ---------- */
+const logoDataUri = (size = 200) => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 100 100">
+    <circle cx="50" cy="50" r="48" fill="${C.crema}" stroke="${C.verde}" stroke-width="2"/>
+    <text x="30" y="52" font-family="Arial, sans-serif" font-weight="800" font-size="52" fill="${C.verde}" text-anchor="middle">K</text>
+    <text x="58" y="86" font-family="Arial, sans-serif" font-weight="800" font-size="52" fill="${C.verde}" text-anchor="middle">P</text>
+  </svg>`;
+  return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+};
+
+const aplicarMarcaDeAgua = (dataUrl) =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error("No se pudo procesar la imagen"));
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const wmSize = Math.round(Math.min(img.width, img.height) * 0.26);
+      const margin = Math.round(wmSize * 0.18);
+      const logo = new Image();
+      logo.onerror = () => reject(new Error("No se pudo aplicar la marca de agua"));
+      logo.onload = () => {
+        ctx.globalAlpha = 0.6;
+        ctx.drawImage(logo, img.width - wmSize - margin, img.height - wmSize - margin, wmSize, wmSize);
+        ctx.globalAlpha = 1;
+        resolve(canvas.toDataURL("image/jpeg", 0.78));
+      };
+      logo.src = logoDataUri(200);
+    };
+    img.src = dataUrl;
+  });
+
+/* ---------- Estilos base ---------- */
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box}
+.kp-root{font-family:'Inter',system-ui,sans-serif;background:${C.crema};min-height:100vh;color:${C.tinta}}
+.kp-display{font-family:'Baloo 2',sans-serif}
+.kp-btn{border:none;border-radius:12px;padding:11px 18px;font-weight:600;font-size:14px;cursor:pointer;
+  font-family:'Inter',sans-serif;transition:transform .08s ease,opacity .15s}
+.kp-btn:active{transform:scale(.97)}
+.kp-btn:focus-visible{outline:3px solid ${C.ambar};outline-offset:2px}
+.kp-input{width:100%;padding:11px 12px;border:1.5px solid ${C.linea};border-radius:10px;font-size:14px;
+  font-family:'Inter',sans-serif;background:${C.hueso};color:${C.tinta}}
+.kp-input:focus{outline:none;border-color:${C.verde}}
+.kp-card{background:${C.hueso};border:1px solid ${C.linea};border-radius:16px}
+.kp-tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px;border:none;
+  background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:11px;font-weight:600;color:${C.gris};border-radius:10px}
+.kp-tab.on{color:${C.verde};background:${C.verdeSuave}}
+.kp-label{display:block;font-size:12px;font-weight:600;color:${C.gris};margin:12px 0 5px;text-transform:uppercase;letter-spacing:.04em}
+@media(prefers-reduced-motion:reduce){.kp-btn{transition:none}}
+`;
+
+/* ============================================================ */
+function KallpaCRM() {
+  const [tab, setTab] = useState("tablero");
+  const [products, setProducts] = useState([]);
+  const [sales, setSales] = useState([]);
+  const [moves, setMoves] = useState([]); // egresos: compras de mercadería y gastos
+  const [photos, setPhotos] = useState({}); // id -> dataURL
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+
+  const notify = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); };
+
+  /* ---- Cargar datos guardados ---- */
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get(DATA_KEY);
+        if (res && res.value) {
+          const d = JSON.parse(res.value);
+          setProducts(d.products || []);
+          setSales(d.sales || []);
+          setMoves(d.moves || []);
+        }
+      } catch (e) { /* primera vez: no hay datos */ }
+      try {
+        const list = await window.storage.list("kallpa:foto:");
+        if (list && list.keys) {
+          const map = {};
+          for (const k of list.keys) {
+            try {
+              const r = await window.storage.get(k);
+              if (r && r.value) map[k.replace("kallpa:foto:", "")] = r.value;
+            } catch (e) {}
+          }
+          setPhotos(map);
+        }
+      } catch (e) {}
+      setLoading(false);
+    })();
+  }, []);
+
+  const persist = async (p = products, s = sales, m = moves) => {
+    try {
+      await window.storage.set(DATA_KEY, JSON.stringify({ products: p, sales: s, moves: m }));
+    } catch (e) { notify("⚠️ No se pudo guardar. Revisa tu conexión."); }
+  };
+
+  const savePhoto = async (id, dataUrl) => {
+    setPhotos((prev) => ({ ...prev, [id]: dataUrl }));
+    try { await window.storage.set("kallpa:foto:" + id, dataUrl); }
+    catch (e) { notify("⚠️ La foto no se pudo guardar."); }
+  };
+  const deletePhoto = async (id) => {
+    setPhotos((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    try { await window.storage.delete("kallpa:foto:" + id); } catch (e) {}
+  };
+
+  /* ---- Acciones ---- */
+  const upsertProduct = (prod) => {
+    const esNuevo = !products.some((p) => p.id === prod.id);
+    const next = esNuevo ? [...products, prod] : products.map((p) => (p.id === prod.id ? prod : p));
+    setProducts(next);
+    let nextM = moves;
+    // El stock inicial de una gorra nueva también se registra como egreso (compra),
+    // para que "Egresos" refleje el dinero realmente invertido.
+    if (esNuevo && prod.stock > 0 && prod.precioCompra > 0) {
+      nextM = [{
+        id: uid(), fecha: hoy(), tipo: "compra", productId: prod.id,
+        concepto: `Stock inicial: ${prod.nombre}`, qty: prod.stock, total: prod.stock * prod.precioCompra,
+      }, ...moves];
+      setMoves(nextM);
+    }
+    persist(next, sales, nextM);
+  };
+  const removeProduct = (id) => {
+    const next = products.filter((p) => p.id !== id);
+    setProducts(next); persist(next, sales, moves); deletePhoto(id);
+  };
+  const addSale = (sale) => {
+    const nextP = products.map((p) =>
+      p.id === sale.productId ? { ...p, stock: Math.max(0, p.stock - sale.qty) } : p
+    );
+    const nextS = [sale, ...sales];
+    setProducts(nextP); setSales(nextS); persist(nextP, nextS, moves);
+    notify("✅ Venta registrada");
+  };
+  const updateSale = (id, sale, original) => {
+    let nextP = products;
+    if (original.productId === sale.productId) {
+      const diff = sale.qty - original.qty;
+      nextP = products.map((p) => (p.id === sale.productId ? { ...p, stock: Math.max(0, p.stock - diff) } : p));
+    } else {
+      nextP = products.map((p) => {
+        if (p.id === original.productId) return { ...p, stock: p.stock + original.qty };
+        if (p.id === sale.productId) return { ...p, stock: Math.max(0, p.stock - sale.qty) };
+        return p;
+      });
+    }
+    const nextS = sales.map((s) => (s.id === id ? sale : s));
+    setProducts(nextP); setSales(nextS); persist(nextP, nextS, moves);
+    notify("✅ Venta actualizada");
+  };
+  const removeSale = (id) => {
+    const sale = sales.find((s) => s.id === id);
+    if (!sale) return;
+    const nextP = products.map((p) => (p.id === sale.productId ? { ...p, stock: p.stock + sale.qty } : p));
+    const nextS = sales.filter((s) => s.id !== id);
+    setProducts(nextP); setSales(nextS); persist(nextP, nextS, moves);
+    notify("Venta eliminada, stock restituido");
+  };
+  const addMove = (mv) => {
+    let nextP = products;
+    if (mv.tipo === "compra" && mv.productId) {
+      nextP = products.map((p) => (p.id === mv.productId ? { ...p, stock: p.stock + mv.qty } : p));
+      setProducts(nextP);
+    }
+    const nextM = [mv, ...moves];
+    setMoves(nextM); persist(nextP, sales, nextM);
+    notify("✅ Egreso registrado");
+  };
+  const updateMove = (id, mv, original) => {
+    let nextP = products;
+    if (original.tipo === "compra" && original.productId) {
+      nextP = nextP.map((p) => (p.id === original.productId ? { ...p, stock: Math.max(0, p.stock - original.qty) } : p));
+    }
+    if (mv.tipo === "compra" && mv.productId) {
+      nextP = nextP.map((p) => (p.id === mv.productId ? { ...p, stock: p.stock + mv.qty } : p));
+    }
+    if (nextP !== products) setProducts(nextP);
+    const nextM = moves.map((m) => (m.id === id ? mv : m));
+    setMoves(nextM); persist(nextP, sales, nextM);
+    notify("✅ Egreso actualizado");
+  };
+  const removeMove = (id) => {
+    const mv = moves.find((m) => m.id === id);
+    if (!mv) return;
+    let nextP = products;
+    if (mv.tipo === "compra" && mv.productId) {
+      nextP = products.map((p) => (p.id === mv.productId ? { ...p, stock: Math.max(0, p.stock - mv.qty) } : p));
+      setProducts(nextP);
+    }
+    const nextM = moves.filter((m) => m.id !== id);
+    setMoves(nextM); persist(nextP, sales, nextM);
+    notify("Egreso eliminado" + (mv.tipo === "compra" ? ", stock ajustado" : ""));
+  };
+  const restoreBackup = async (data) => {
+    const p = data.products || [], s = data.sales || [], m = data.moves || [], ph = data.photos || {};
+    setProducts(p); setSales(s); setMoves(m); setPhotos(ph);
+    await persist(p, s, m);
+    try {
+      const list = await window.storage.list("kallpa:foto:");
+      if (list && list.keys) for (const k of list.keys) await window.storage.delete(k);
+      for (const id of Object.keys(ph)) await window.storage.set("kallpa:foto:" + id, ph[id]);
+    } catch (e) {}
+    notify("✅ Respaldo restaurado");
+  };
+
+  /* ---- Métricas del tablero ---- */
+  const stats = useMemo(() => {
+    const stockTotal = products.reduce((a, p) => a + (p.stock || 0), 0);
+    const ingresos = sales.reduce((a, s) => a + s.total, 0);
+    const egresos = moves.reduce((a, m) => a + m.total, 0);
+    const costoVendido = sales.reduce((a, s) => a + (s.costUnit || 0) * s.qty, 0);
+    const gananciaBruta = ingresos - costoVendido;
+    const utilidad = ingresos - egresos;
+    const valorStock = products.reduce((a, p) => a + (p.stock || 0) * (p.precioCompra || 0), 0);
+    const bajoStock = products.filter((p) => p.stock <= (p.stockMin ?? 6));
+    const vendidasPorProducto = {};
+    sales.forEach((s) => { vendidasPorProducto[s.productId] = (vendidasPorProducto[s.productId] || 0) + s.qty; });
+    const top = Object.entries(vendidasPorProducto)
+      .map(([id, q]) => ({ p: products.find((x) => x.id === id), q }))
+      .filter((x) => x.p).sort((a, b) => b.q - a.q).slice(0, 5);
+    return { stockTotal, ingresos, egresos, gananciaBruta, utilidad, valorStock, bajoStock, top };
+  }, [products, sales, moves]);
+
+  if (loading)
+    return (
+      <div className="kp-root" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh", flexDirection: "column", gap: 14 }}>
+        <style>{css}</style>
+        <Logo size={72} />
+        <div className="kp-display" style={{ fontSize: 22, fontWeight: 800, color: C.verde }}>KALLPA</div>
+        <div style={{ color: C.gris, fontSize: 13 }}>Cargando tu negocio…</div>
+      </div>
+    );
+
+  const tabs = [
+    { id: "tablero", icon: "📊", label: "Tablero" },
+    { id: "inventario", icon: "🧢", label: "Inventario" },
+    { id: "ventas", icon: "💵", label: "Ventas" },
+    { id: "egresos", icon: "📦", label: "Egresos" },
+    { id: "catalogo", icon: "📖", label: "Catálogo" },
+    { id: "ajustes", icon: "⚙️", label: "Ajustes" },
+  ];
+
+  return (
+    <div className="kp-root">
+      <style>{css}</style>
+
+      {/* Encabezado */}
+      <header style={{ background: C.verde, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, position: "sticky", top: 0, zIndex: 20 }}>
+        <Logo size={42} />
+        <div>
+          <div className="kp-display" style={{ color: C.crema, fontWeight: 800, fontSize: 21, lineHeight: 1 }}>KALLPA</div>
+          <div style={{ color: C.verdeSuave, fontSize: 11.5, marginTop: 2 }}>Gorras al por mayor y menor</div>
+        </div>
+      </header>
+
+      {/* Contenido */}
+      <main style={{ maxWidth: 860, margin: "0 auto", padding: "16px 14px 90px" }}>
+        {tab === "tablero" && <Tablero stats={stats} sales={sales} moves={moves} products={products} photos={photos} />}
+        {tab === "inventario" && (
+          <Inventario products={products} photos={photos} onSave={upsertProduct} onDelete={removeProduct} onPhoto={savePhoto} notify={notify} />
+        )}
+        {tab === "ventas" && <Ventas products={products} sales={sales} photos={photos} onAdd={addSale} onUpdate={updateSale} onRemove={removeSale} notify={notify} />}
+        {tab === "egresos" && <Egresos products={products} moves={moves} onAdd={addMove} onUpdate={updateMove} onRemove={removeMove} notify={notify} />}
+        {tab === "catalogo" && <Catalogo products={products} photos={photos} />}
+        {tab === "ajustes" && <Ajustes products={products} sales={sales} moves={moves} photos={photos} onRestore={restoreBackup} notify={notify} />}
+      </main>
+
+      {/* Navegación inferior (pensada para el celular) */}
+      <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: C.hueso, borderTop: `1px solid ${C.linea}`, display: "flex", gap: 4, padding: "6px 8px", zIndex: 20, maxWidth: "100%", justifyContent: "center" }}>
+        <div style={{ display: "flex", gap: 4, width: "100%", maxWidth: 560 }}>
+          {tabs.map((t) => (
+            <button key={t.id} className={`kp-tab ${tab === t.id ? "on" : ""}`} onClick={() => setTab(t.id)}>
+              <span style={{ fontSize: 19 }}>{t.icon}</span>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* Aviso */}
+      {toast && (
+        <div style={{ position: "fixed", bottom: 78, left: "50%", transform: "translateX(-50%)", background: C.tinta, color: C.crema, padding: "10px 18px", borderRadius: 12, fontSize: 13.5, fontWeight: 600, zIndex: 40, boxShadow: "0 6px 20px rgba(0,0,0,.25)", whiteSpace: "nowrap" }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   TABLERO
+   ============================================================ */
+function Tablero({ stats, sales, moves, products, photos }) {
+  const cards = [
+    { t: "Gorras en stock", v: stats.stockTotal + " uds.", sub: "Valor de compra: " + fmt(stats.valorStock), bg: C.verdeSuave, color: C.verde },
+    { t: "Ingresos", v: fmt(stats.ingresos), sub: sales.length + " ventas registradas", bg: C.hueso, color: C.tinta },
+    { t: "Egresos", v: fmt(stats.egresos), sub: "Compras + gastos", bg: C.rojoSuave, color: C.rojo },
+    { t: "Utilidad", v: fmt(stats.utilidad), sub: "Ganancia bruta: " + fmt(stats.gananciaBruta), bg: stats.utilidad >= 0 ? C.verdeSuave : C.rojoSuave, color: stats.utilidad >= 0 ? C.verde : C.rojo },
+  ];
+
+  // ventas de los últimos 7 días para la barra
+  const dias = [...Array(7)].map((_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    const key = d.toISOString().slice(0, 10);
+    const total = sales.filter((s) => s.fecha === key).reduce((a, s) => a + s.total, 0);
+    return { key, label: d.toLocaleDateString("es-BO", { weekday: "short" }), total };
+  });
+  const maxDia = Math.max(...dias.map((d) => d.total), 1);
+
+  return (
+    <div>
+      <h2 className="kp-display" style={{ fontSize: 22, fontWeight: 800, margin: "4px 0 14px", color: C.verdeOscuro }}>Tablero de control</h2>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
+        {cards.map((c) => (
+          <div key={c.t} className="kp-card" style={{ padding: "14px 16px", background: c.bg }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: C.gris, textTransform: "uppercase", letterSpacing: ".04em" }}>{c.t}</div>
+            <div className="kp-display" style={{ fontSize: 24, fontWeight: 800, color: c.color, margin: "4px 0 2px" }}>{c.v}</div>
+            <div style={{ fontSize: 11.5, color: C.gris }}>{c.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Ventas últimos 7 días */}
+      <div className="kp-card" style={{ padding: 16, marginTop: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12 }}>Ventas de los últimos 7 días</div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 110 }}>
+          {dias.map((d) => (
+            <div key={d.key} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, height: "100%", justifyContent: "flex-end" }}>
+              <div style={{ fontSize: 10, color: C.gris, fontWeight: 600 }}>{d.total > 0 ? "Bs " + Math.round(d.total) : ""}</div>
+              <div style={{ width: "100%", maxWidth: 40, borderRadius: "6px 6px 0 0", background: d.total > 0 ? C.verde : C.linea, height: Math.max((d.total / maxDia) * 78, 4) }} />
+              <div style={{ fontSize: 10.5, color: C.gris }}>{d.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: 12, marginTop: 14 }}>
+        {/* Alerta de stock bajo */}
+        <div className="kp-card" style={{ padding: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>⚠️ Stock bajo</div>
+          {stats.bajoStock.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.gris }}>Todo en orden. Ningún modelo por debajo del mínimo.</div>
+          ) : (
+            stats.bajoStock.map((p) => (
+              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: C.ambarSuave, borderRadius: 10, marginBottom: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{p.nombre}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: C.ambar }}>{p.stock} uds.</span>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Top vendidos */}
+        <div className="kp-card" style={{ padding: 16 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>🏆 Modelos más vendidos</div>
+          {stats.top.length === 0 ? (
+            <div style={{ fontSize: 13, color: C.gris }}>Aún no hay ventas. Registra la primera desde la pestaña Ventas.</div>
+          ) : (
+            stats.top.map(({ p, q }, i) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: i < stats.top.length - 1 ? `1px solid ${C.linea}` : "none" }}>
+                {photos[p.id] ? (
+                  <img src={photos[p.id]} alt={p.nombre} style={{ width: 34, height: 34, borderRadius: 8, objectFit: "cover" }} />
+                ) : (
+                  <div style={{ width: 34, height: 34, borderRadius: 8, background: C.verdeSuave, display: "flex", alignItems: "center", justifyContent: "center" }}>🧢</div>
+                )}
+                <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{p.nombre}</span>
+                <span style={{ fontSize: 12.5, fontWeight: 700, color: C.verde }}>{q} vendidas</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Últimas ventas */}
+      <div className="kp-card" style={{ padding: 16, marginTop: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>Últimas ventas</div>
+        {sales.slice(0, 6).map((s) => (
+          <div key={s.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "7px 0", borderBottom: `1px solid ${C.linea}`, fontSize: 13 }}>
+            <span style={{ fontWeight: 600 }}>{s.productoNombre} × {s.qty}</span>
+            <span style={{ color: C.gris }}>{s.tipo === "mayor" ? "Por mayor" : "Por menor"}</span>
+            <span style={{ fontWeight: 700, color: C.verde }}>{fmt(s.total)}</span>
+          </div>
+        ))}
+        {sales.length === 0 && <div style={{ fontSize: 13, color: C.gris }}>Sin movimientos todavía.</div>}
+      </div>
+
+      <ReporteFechas sales={sales} moves={moves} />
+    </div>
+  );
+}
+
+/* ---------- Reporte financiero por rango de fechas ---------- */
+function ReporteFechas({ sales, moves }) {
+  const primerDiaMes = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10); };
+  const [desde, setDesde] = useState(primerDiaMes());
+  const [hasta, setHasta] = useState(hoy());
+
+  const ventasRango = sales.filter((s) => s.fecha >= desde && s.fecha <= hasta);
+  const movesRango = moves.filter((m) => m.fecha >= desde && m.fecha <= hasta);
+  const ingresos = ventasRango.reduce((a, s) => a + s.total, 0);
+  const egresos = movesRango.reduce((a, m) => a + m.total, 0);
+  const costoVendido = ventasRango.reduce((a, s) => a + (s.costUnit || 0) * s.qty, 0);
+  const gananciaBruta = ingresos - costoVendido;
+  const utilidad = ingresos - egresos;
+  const unidadesVendidas = ventasRango.reduce((a, s) => a + s.qty, 0);
+
+  const filas = [
+    ["Ventas", `${unidadesVendidas} uds. (${ventasRango.length} ventas)`, C.tinta],
+    ["Ingresos", fmt(ingresos), C.verde],
+    ["Egresos", fmt(egresos), C.rojo],
+    ["Ganancia bruta", fmt(gananciaBruta), gananciaBruta >= 0 ? C.verde : C.rojo],
+    ["Utilidad", fmt(utilidad), utilidad >= 0 ? C.verde : C.rojo],
+  ];
+
+  return (
+    <div className="kp-card" style={{ padding: 16, marginTop: 14 }}>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10 }}>📅 Reporte por fechas</div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 130 }}>
+          <label className="kp-label" style={{ margin: "0 0 4px" }}>Desde</label>
+          <input className="kp-input" type="date" value={desde} max={hasta} onChange={(e) => setDesde(e.target.value)} />
+        </div>
+        <div style={{ flex: 1, minWidth: 130 }}>
+          <label className="kp-label" style={{ margin: "0 0 4px" }}>Hasta</label>
+          <input className="kp-input" type="date" value={hasta} min={desde} onChange={(e) => setHasta(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8 }}>
+        {filas.map(([t, v, color]) => (
+          <div key={t} style={{ background: C.crema, borderRadius: 10, padding: "8px 10px" }}>
+            <div style={{ fontSize: 10.5, color: C.gris, fontWeight: 600, textTransform: "uppercase" }}>{t}</div>
+            <div className="kp-display" style={{ fontSize: 15, fontWeight: 800, color }}>{v}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   INVENTARIO
+   ============================================================ */
+function Inventario({ products, photos, onSave, onDelete, onPhoto, notify }) {
+  const [editing, setEditing] = useState(null); // null | producto | "nuevo"
+  const [busca, setBusca] = useState("");
+
+  const list = products.filter((p) => p.nombre.toLowerCase().includes(busca.toLowerCase()));
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, margin: "4px 0 14px" }}>
+        <h2 className="kp-display" style={{ fontSize: 22, fontWeight: 800, margin: 0, color: C.verdeOscuro }}>Inventario</h2>
+        <button className="kp-btn" style={{ background: C.verde, color: C.crema }} onClick={() => setEditing("nuevo")}>+ Nueva gorra</button>
+      </div>
+
+      <input className="kp-input" placeholder="Buscar modelo…" value={busca} onChange={(e) => setBusca(e.target.value)} style={{ marginBottom: 12 }} />
+
+      {list.length === 0 && (
+        <div className="kp-card" style={{ padding: 24, textAlign: "center", color: C.gris, fontSize: 14 }}>
+          {products.length === 0 ? "Tu inventario está vacío. Agrega tu primera gorra con el botón de arriba." : "Ningún modelo coincide con la búsqueda."}
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(155px,1fr))", gap: 10 }}>
+        {list.map((p) => (
+          <button key={p.id} onClick={() => setEditing(p)} className="kp-card" style={{ padding: 0, overflow: "hidden", textAlign: "left", cursor: "pointer", border: `1px solid ${C.linea}`, background: C.hueso, fontFamily: "'Inter',sans-serif" }}>
+            <div style={{ aspectRatio: "1", background: C.verdeSuave, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+              {photos[p.id] ? (
+                <img src={photos[p.id]} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <span style={{ fontSize: 34 }}>🧢</span>
+              )}
+              <span style={{ position: "absolute", top: 6, right: 6, background: p.stock <= (p.stockMin ?? 6) ? C.ambar : C.verde, color: "#fff", fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 20 }}>
+                {p.stock} uds.
+              </span>
+            </div>
+            <div style={{ padding: "9px 11px" }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, color: C.tinta }}>{p.nombre}</div>
+              <div style={{ fontSize: 11.5, color: C.gris, marginTop: 2 }}>Menor {fmt(p.precioMenor)} · Mayor {fmt(p.precioMayor)}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {editing && (
+        <FormProducto
+          prod={editing === "nuevo" ? null : editing}
+          foto={editing !== "nuevo" ? photos[editing.id] : null}
+          onClose={() => setEditing(null)}
+          onSave={(p, fotoNueva) => {
+            onSave(p);
+            if (fotoNueva) onPhoto(p.id, fotoNueva);
+            setEditing(null);
+            notify("✅ Producto guardado");
+          }}
+          onDelete={(id) => { onDelete(id); setEditing(null); notify("Producto eliminado"); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FormProducto({ prod, foto, onClose, onSave, onDelete }) {
+  const [f, setF] = useState(
+    prod || { id: uid(), nombre: "", categoria: "Snapback", precioCompra: "", precioMayor: "", precioMenor: "", stock: "", stockMin: 6 }
+  );
+  const [fotoNueva, setFotoNueva] = useState(null);
+  const [subiendo, setSubiendo] = useState(false);
+  const [marcaAgua, setMarcaAgua] = useState(true);
+  const fileRef = useRef(null);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  const elegirFoto = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setSubiendo(true);
+    try {
+      let foto = await comprimirFoto(file);
+      if (marcaAgua) foto = await aplicarMarcaDeAgua(foto);
+      setFotoNueva(foto);
+    } catch (err) { alert("No se pudo procesar la foto. Intenta con otra imagen."); }
+    setSubiendo(false);
+  };
+
+  const guardar = () => {
+    if (!f.nombre.trim()) return alert("Escribe el nombre del modelo.");
+    onSave({
+      ...f,
+      nombre: f.nombre.trim(),
+      precioCompra: Number(f.precioCompra) || 0,
+      precioMayor: Number(f.precioMayor) || 0,
+      precioMenor: Number(f.precioMenor) || 0,
+      stock: Number(f.stock) || 0,
+      stockMin: Number(f.stockMin) || 0,
+    }, fotoNueva);
+  };
+
+  const preview = fotoNueva || foto;
+  const margenMenor = f.precioMenor && f.precioCompra ? (Number(f.precioMenor) - Number(f.precioCompra)) : null;
+  const margenMayor = f.precioMayor && f.precioCompra ? (Number(f.precioMayor) - Number(f.precioCompra)) : null;
+
+  return (
+    <Modal title={prod ? "Editar gorra" : "Nueva gorra"} onClose={onClose}>
+      {/* Foto desde el celular */}
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 4 }}>
+        <div style={{ width: 84, height: 84, borderRadius: 14, background: C.verdeSuave, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          {preview ? <img src={preview} alt="Foto de la gorra" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontSize: 30 }}>🧢</span>}
+        </div>
+        <div>
+          <button className="kp-btn" style={{ background: C.verde, color: C.crema, fontSize: 13 }} onClick={() => fileRef.current && fileRef.current.click()} disabled={subiendo}>
+            {subiendo ? "Procesando…" : "📷 Tomar / subir foto"}
+          </button>
+          <div style={{ fontSize: 11.5, color: C.gris, marginTop: 5 }}>Desde el celular abre la cámara directamente.</div>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: C.gris, marginTop: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={marcaAgua} onChange={(e) => setMarcaAgua(e.target.checked)} />
+            Agregar marca de agua Kallpa
+          </label>
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={elegirFoto} style={{ display: "none" }} />
+        </div>
+      </div>
+
+      <label className="kp-label">Nombre del modelo</label>
+      <input className="kp-input" value={f.nombre} onChange={set("nombre")} placeholder="Ej. Snapback NY negra" />
+
+      <label className="kp-label">Categoría</label>
+      <select className="kp-input" value={f.categoria} onChange={set("categoria")}>
+        {["Snapback", "Trucker", "Dad hat", "Fitted", "Visera", "Otra"].map((c) => <option key={c}>{c}</option>)}
+      </select>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label className="kp-label">Precio de compra (Bs)</label>
+          <input className="kp-input" type="number" inputMode="decimal" value={f.precioCompra} onChange={set("precioCompra")} placeholder="0.00" />
+        </div>
+        <div>
+          <label className="kp-label">Stock {prod ? "actual" : "inicial"}</label>
+          <input className="kp-input" type="number" inputMode="numeric" value={f.stock} onChange={set("stock")} placeholder="0" />
+          {prod && <div style={{ fontSize: 11, color: C.gris, marginTop: 4 }}>Para sumar stock nuevo usa Egresos → Compra (así también queda el gasto).</div>}
+        </div>
+        <div>
+          <label className="kp-label">Precio por mayor (Bs)</label>
+          <input className="kp-input" type="number" inputMode="decimal" value={f.precioMayor} onChange={set("precioMayor")} placeholder="0.00" />
+          {margenMayor !== null && <div style={{ fontSize: 11.5, color: margenMayor >= 0 ? C.verde : C.rojo, marginTop: 4, fontWeight: 600 }}>Margen: {fmt(margenMayor)}/ud.</div>}
+        </div>
+        <div>
+          <label className="kp-label">Precio por menor (Bs)</label>
+          <input className="kp-input" type="number" inputMode="decimal" value={f.precioMenor} onChange={set("precioMenor")} placeholder="0.00" />
+          {margenMenor !== null && <div style={{ fontSize: 11.5, color: margenMenor >= 0 ? C.verde : C.rojo, marginTop: 4, fontWeight: 600 }}>Margen: {fmt(margenMenor)}/ud.</div>}
+        </div>
+      </div>
+
+      <label className="kp-label">Avisarme cuando queden menos de</label>
+      <input className="kp-input" type="number" inputMode="numeric" value={f.stockMin} onChange={set("stockMin")} />
+
+      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+        {prod && (
+          <button className="kp-btn" style={{ background: C.rojoSuave, color: C.rojo }} onClick={() => { if (confirm("¿Eliminar este producto del inventario?")) onDelete(prod.id); }}>
+            Eliminar
+          </button>
+        )}
+        <button className="kp-btn" style={{ flex: 1, background: C.verde, color: C.crema }} onClick={guardar}>Guardar gorra</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   VENTAS
+   ============================================================ */
+function Ventas({ products, sales, photos, onAdd, onUpdate, onRemove, notify }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | venta seleccionada
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "4px 0 14px" }}>
+        <h2 className="kp-display" style={{ fontSize: 22, fontWeight: 800, margin: 0, color: C.verdeOscuro }}>Ventas</h2>
+        <button className="kp-btn" style={{ background: C.verde, color: C.crema }} onClick={() => setModal("nuevo")}>+ Registrar venta</button>
+      </div>
+
+      {sales.length === 0 ? (
+        <div className="kp-card" style={{ padding: 24, textAlign: "center", color: C.gris, fontSize: 14 }}>
+          Todavía no registraste ventas. Cuando vendas una gorra, anótala aquí y el stock se descuenta solo.
+        </div>
+      ) : (
+        <div className="kp-card" style={{ overflow: "hidden" }}>
+          {sales.map((s, i) => (
+            <button key={s.id} onClick={() => setModal(s)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", width: "100%", border: "none", borderBottom: i < sales.length - 1 ? `1px solid ${C.linea}` : "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "'Inter',sans-serif" }}>
+              {photos[s.productId] ? (
+                <img src={photos[s.productId]} alt="" style={{ width: 38, height: 38, borderRadius: 9, objectFit: "cover" }} />
+              ) : (
+                <div style={{ width: 38, height: 38, borderRadius: 9, background: C.verdeSuave, display: "flex", alignItems: "center", justifyContent: "center" }}>🧢</div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5, color: C.tinta }}>{s.productoNombre} × {s.qty}</div>
+                <div style={{ fontSize: 11.5, color: C.gris }}>
+                  {s.fecha} · {s.tipo === "mayor" ? "Por mayor" : "Por menor"}{s.cliente ? " · " + s.cliente : ""}
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontWeight: 800, color: C.verde, fontSize: 14 }}>{fmt(s.total)}</div>
+                <div style={{ fontSize: 11, color: C.gris }}>{fmt(s.precioUnit)}/ud.</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {modal && (
+        <FormVenta
+          initial={modal === "nuevo" ? null : modal}
+          products={products}
+          onClose={() => setModal(null)}
+          onSave={(sale, original) => {
+            if (original) onUpdate(sale.id, sale, original); else onAdd(sale);
+            setModal(null);
+          }}
+          onDelete={(id) => { onRemove(id); setModal(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FormVenta({ initial, products, onClose, onSave, onDelete }) {
+  const editando = !!initial;
+  const [f, setF] = useState(initial ? { ...initial } : { productId: "", tipo: "menor", qty: 1, precio: "", cliente: "" });
+  const prod = products.find((p) => p.id === f.productId);
+  const firstRun = useRef(true);
+
+  useEffect(() => {
+    if (firstRun.current) { firstRun.current = false; return; }
+    if (prod) setF((prev) => ({ ...prev, precio: prev.tipo === "mayor" ? prod.precioMayor : prod.precioMenor }));
+  }, [f.productId, f.tipo]); // eslint-disable-line
+
+  const stockDisponible = prod ? prod.stock + (editando && initial.productId === prod.id ? Number(initial.qty) || 0 : 0) : 0;
+
+  const guardar = () => {
+    if (!prod) return alert("Elige una gorra.");
+    const qty = Number(f.qty) || 0;
+    if (qty <= 0) return alert("La cantidad debe ser mayor a cero.");
+    if (qty > stockDisponible) return alert(`Solo hay ${stockDisponible} unidades disponibles de "${prod.nombre}".`);
+    const precio = Number(f.precio) || 0;
+    const sale = {
+      id: editando ? initial.id : uid(), fecha: editando ? initial.fecha : hoy(),
+      productId: prod.id, productoNombre: prod.nombre, tipo: f.tipo, qty,
+      precioUnit: precio, costUnit: prod.precioCompra || 0, total: precio * qty, cliente: (f.cliente || "").trim(),
+    };
+    onSave(sale, editando ? initial : null);
+  };
+
+  return (
+    <Modal title={editando ? "Editar venta" : "Registrar venta"} onClose={onClose}>
+      <label className="kp-label">Gorra</label>
+      <select className="kp-input" value={f.productId} onChange={(e) => setF({ ...f, productId: e.target.value })}>
+        <option value="">Elige un modelo…</option>
+        {products.map((p) => {
+          const esActual = editando && initial.productId === p.id;
+          return (
+            <option key={p.id} value={p.id} disabled={p.stock <= 0 && !esActual}>
+              {p.nombre} ({p.stock + (esActual ? Number(initial.qty) || 0 : 0)} en stock)
+            </option>
+          );
+        })}
+      </select>
+
+      <label className="kp-label">Tipo de venta</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        {[["menor", "Por menor"], ["mayor", "Por mayor"]].map(([v, l]) => (
+          <button key={v} className="kp-btn" style={{ flex: 1, background: f.tipo === v ? C.verde : C.hueso, color: f.tipo === v ? C.crema : C.tinta, border: `1.5px solid ${f.tipo === v ? C.verde : C.linea}` }} onClick={() => setF({ ...f, tipo: v })}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label className="kp-label">Cantidad</label>
+          <input className="kp-input" type="number" inputMode="numeric" min="1" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} />
+        </div>
+        <div>
+          <label className="kp-label">Precio unitario (Bs)</label>
+          <input className="kp-input" type="number" inputMode="decimal" value={f.precio} onChange={(e) => setF({ ...f, precio: e.target.value })} />
+        </div>
+      </div>
+
+      <label className="kp-label">Cliente (opcional)</label>
+      <input className="kp-input" value={f.cliente} onChange={(e) => setF({ ...f, cliente: e.target.value })} placeholder="Nombre o tienda" />
+
+      {prod && (
+        <div style={{ marginTop: 14, padding: "10px 14px", background: C.verdeSuave, borderRadius: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+          <span>Total</span>
+          <span style={{ color: C.verde }}>{fmt((Number(f.precio) || 0) * (Number(f.qty) || 0))}</span>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        {editando && (
+          <button className="kp-btn" style={{ background: C.rojoSuave, color: C.rojo }} onClick={() => { if (confirm("¿Eliminar esta venta? El stock vendido se devolverá al inventario.")) onDelete(initial.id); }}>
+            Eliminar
+          </button>
+        )}
+        <button className="kp-btn" style={{ flex: 1, background: C.verde, color: C.crema }} onClick={guardar}>
+          {editando ? "Guardar cambios" : "Registrar venta"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   EGRESOS (compras de mercadería y gastos)
+   ============================================================ */
+function Egresos({ products, moves, onAdd, onUpdate, onRemove, notify }) {
+  const [modal, setModal] = useState(null); // null | "nuevo" | egreso seleccionado
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "4px 0 14px" }}>
+        <h2 className="kp-display" style={{ fontSize: 22, fontWeight: 800, margin: 0, color: C.verdeOscuro }}>Egresos</h2>
+        <button className="kp-btn" style={{ background: C.verde, color: C.crema }} onClick={() => setModal("nuevo")}>+ Registrar egreso</button>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: C.gris, marginBottom: 12 }}>
+        Las compras de mercadería suman stock automáticamente. Los gastos (transporte, alquiler, bolsas…) solo afectan la caja.
+      </div>
+
+      {moves.length === 0 ? (
+        <div className="kp-card" style={{ padding: 24, textAlign: "center", color: C.gris, fontSize: 14 }}>
+          Sin egresos registrados. Anota aquí cada compra de gorras y cada gasto del negocio.
+        </div>
+      ) : (
+        <div className="kp-card" style={{ overflow: "hidden" }}>
+          {moves.map((m, i) => (
+            <button key={m.id} onClick={() => setModal(m)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", width: "100%", border: "none", borderBottom: i < moves.length - 1 ? `1px solid ${C.linea}` : "none", background: "transparent", cursor: "pointer", textAlign: "left", fontFamily: "'Inter',sans-serif" }}>
+              <div style={{ width: 38, height: 38, borderRadius: 9, background: m.tipo === "compra" ? C.verdeSuave : C.rojoSuave, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, flexShrink: 0 }}>
+                {m.tipo === "compra" ? "📦" : "🧾"}
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 700, fontSize: 13.5, color: C.tinta }}>{m.concepto}{m.qty ? ` × ${m.qty}` : ""}</div>
+                <div style={{ fontSize: 11.5, color: C.gris }}>{m.fecha} · {m.tipo === "compra" ? "Compra de mercadería" : "Gasto"}</div>
+              </div>
+              <div style={{ fontWeight: 800, color: C.rojo, fontSize: 14 }}>− {fmt(m.total)}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {modal && (
+        <FormEgreso
+          initial={modal === "nuevo" ? null : modal}
+          products={products}
+          onClose={() => setModal(null)}
+          onSave={(mv, original) => {
+            if (original) onUpdate(mv.id, mv, original); else onAdd(mv);
+            setModal(null);
+          }}
+          onDelete={(id) => { onRemove(id); setModal(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function FormEgreso({ initial, products, onClose, onSave, onDelete }) {
+  const editando = !!initial;
+  const [f, setF] = useState(() => {
+    if (!initial) return { tipo: "compra", productId: "", qty: "", costoUnit: "", concepto: "", monto: "" };
+    if (initial.tipo === "compra") {
+      return { tipo: "compra", productId: initial.productId || "", qty: initial.qty, costoUnit: initial.qty ? initial.total / initial.qty : "", concepto: "", monto: "" };
+    }
+    return { tipo: "gasto", productId: "", qty: "", costoUnit: "", concepto: initial.concepto, monto: initial.total };
+  });
+
+  const guardar = () => {
+    if (f.tipo === "compra") {
+      const p = products.find((x) => x.id === f.productId);
+      if (!p) return alert("Elige la gorra que compraste.");
+      const qty = Number(f.qty) || 0;
+      const costo = Number(f.costoUnit) || 0;
+      if (qty <= 0) return alert("La cantidad debe ser mayor a cero.");
+      const mv = { id: editando ? initial.id : uid(), fecha: editando ? initial.fecha : hoy(), tipo: "compra", productId: p.id, concepto: `Compra: ${p.nombre}`, qty, total: qty * costo };
+      onSave(mv, editando ? initial : null);
+    } else {
+      if (!f.concepto.trim()) return alert("Describe el gasto.");
+      const monto = Number(f.monto) || 0;
+      if (monto <= 0) return alert("El monto debe ser mayor a cero.");
+      const mv = { id: editando ? initial.id : uid(), fecha: editando ? initial.fecha : hoy(), tipo: "gasto", concepto: f.concepto.trim(), qty: null, total: monto };
+      onSave(mv, editando ? initial : null);
+    }
+  };
+
+  return (
+    <Modal title={editando ? "Editar egreso" : "Registrar egreso"} onClose={onClose}>
+      <label className="kp-label">Tipo de egreso</label>
+      <div style={{ display: "flex", gap: 8 }}>
+        {[["compra", "📦 Compra de gorras"], ["gasto", "🧾 Gasto general"]].map(([v, l]) => (
+          <button key={v} className="kp-btn" style={{ flex: 1, background: f.tipo === v ? C.verde : C.hueso, color: f.tipo === v ? C.crema : C.tinta, border: `1.5px solid ${f.tipo === v ? C.verde : C.linea}`, fontSize: 13 }} onClick={() => setF({ ...f, tipo: v })} disabled={editando}>
+            {l}
+          </button>
+        ))}
+      </div>
+      {editando && <div style={{ fontSize: 11, color: C.gris, marginTop: 6 }}>El tipo de egreso no se puede cambiar una vez creado; elimínalo y crea uno nuevo si lo necesitas.</div>}
+
+      {f.tipo === "compra" ? (
+        <>
+          <label className="kp-label">Gorra comprada</label>
+          <select className="kp-input" value={f.productId} onChange={(e) => setF({ ...f, productId: e.target.value })}>
+            <option value="">Elige el modelo…</option>
+            {products.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+          </select>
+          <div style={{ fontSize: 11.5, color: C.gris, marginTop: 6 }}>Si es un modelo nuevo, primero créalo en Inventario.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label className="kp-label">Cantidad</label>
+              <input className="kp-input" type="number" inputMode="numeric" value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} />
+            </div>
+            <div>
+              <label className="kp-label">Costo unitario (Bs)</label>
+              <input className="kp-input" type="number" inputMode="decimal" value={f.costoUnit} onChange={(e) => setF({ ...f, costoUnit: e.target.value })} />
+            </div>
+          </div>
+          <div style={{ marginTop: 14, padding: "10px 14px", background: C.rojoSuave, borderRadius: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+            <span>Total del egreso</span>
+            <span style={{ color: C.rojo }}>{fmt((Number(f.qty) || 0) * (Number(f.costoUnit) || 0))}</span>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="kp-label">Concepto</label>
+          <input className="kp-input" value={f.concepto} onChange={(e) => setF({ ...f, concepto: e.target.value })} placeholder="Ej. Transporte, alquiler, bolsas…" />
+          <label className="kp-label">Monto (Bs)</label>
+          <input className="kp-input" type="number" inputMode="decimal" value={f.monto} onChange={(e) => setF({ ...f, monto: e.target.value })} />
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        {editando && (
+          <button className="kp-btn" style={{ background: C.rojoSuave, color: C.rojo }} onClick={() => { if (confirm("¿Eliminar este egreso?" + (initial.tipo === "compra" ? " El stock que sumó se descontará." : ""))) onDelete(initial.id); }}>
+            Eliminar
+          </button>
+        )}
+        <button className="kp-btn" style={{ flex: 1, background: C.verde, color: C.crema }} onClick={guardar}>
+          {editando ? "Guardar cambios" : "Registrar egreso"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   CATÁLOGO DIGITAL
+   ============================================================ */
+function Catalogo({ products, photos }) {
+  const [modo, setModo] = useState("menor"); // qué precio mostrar
+  const [exportando, setExportando] = useState(null); // null | "pdf" | "imagen"
+  const catalogRef = useRef(null);
+  const disponibles = products.filter((p) => p.stock > 0);
+
+  const capturar = () => {
+    if (!window.html2canvas) throw new Error("No se pudo cargar la herramienta de exportación. Revisa tu conexión a internet e intenta de nuevo.");
+    return window.html2canvas(catalogRef.current, { scale: 2, backgroundColor: C.crema, useCORS: true });
+  };
+
+  const exportarImagen = async () => {
+    setExportando("imagen");
+    try {
+      const canvas = await capturar();
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png");
+      a.download = `kallpa-catalogo-${hoy()}.png`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    } catch (e) { alert(e.message || "No se pudo generar la imagen."); }
+    setExportando(null);
+  };
+
+  const exportarPDF = async () => {
+    if (!window.jspdf) { alert("No se pudo cargar la herramienta de exportación. Revisa tu conexión a internet e intenta de nuevo."); return; }
+    setExportando("pdf");
+    try {
+      const canvas = await capturar();
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF("p", "mm", "a4");
+      const imgWidth = 210;
+      const pageHeight = 297;
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const imgData = canvas.toDataURL("image/jpeg", 0.85);
+      let heightLeft = imgHeight, position = 0;
+      pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+      while (heightLeft > 0) {
+        position -= pageHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "JPEG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+      pdf.save(`kallpa-catalogo-${hoy()}.pdf`);
+    } catch (e) { alert(e.message || "No se pudo generar el PDF."); }
+    setExportando(null);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, margin: "4px 0 14px", flexWrap: "wrap" }}>
+        <h2 className="kp-display" style={{ fontSize: 22, fontWeight: 800, margin: 0, color: C.verdeOscuro }}>Catálogo digital</h2>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["menor", "Precios por menor"], ["mayor", "Precios por mayor"]].map(([v, l]) => (
+            <button key={v} className="kp-btn" style={{ fontSize: 12, padding: "8px 12px", background: modo === v ? C.verde : C.hueso, color: modo === v ? C.crema : C.tinta, border: `1.5px solid ${modo === v ? C.verde : C.linea}` }} onClick={() => setModo(v)}>
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {disponibles.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="kp-btn" style={{ background: C.verde, color: C.crema, fontSize: 13 }} onClick={exportarPDF} disabled={!!exportando}>
+              {exportando === "pdf" ? "Generando PDF…" : "📄 Descargar catálogo en PDF"}
+            </button>
+            <button className="kp-btn" style={{ background: C.hueso, color: C.tinta, border: `1.5px solid ${C.linea}`, fontSize: 13 }} onClick={exportarImagen} disabled={!!exportando}>
+              {exportando === "imagen" ? "Generando imagen…" : "🖼️ Descargar como imagen"}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: C.gris, marginTop: 6 }}>Puede tardar unos segundos según la cantidad de fotos.</div>
+        </div>
+      )}
+
+      <div ref={catalogRef} style={{ background: C.crema }}>
+        {/* Portada del catálogo con el logotipo */}
+        <div style={{ background: C.verde, borderRadius: 18, padding: "26px 20px", textAlign: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><Logo size={78} /></div>
+          <div className="kp-display" style={{ color: C.crema, fontSize: 30, fontWeight: 800, letterSpacing: ".06em" }}>KALLPA</div>
+          <div style={{ color: C.verdeSuave, fontSize: 13, marginTop: 4 }}>Gorras al por mayor y menor · Catálogo {new Date().toLocaleDateString("es-BO", { month: "long", year: "numeric" })}</div>
+        </div>
+
+        {disponibles.length === 0 ? (
+          <div className="kp-card" style={{ padding: 24, textAlign: "center", color: C.gris, fontSize: 14 }}>
+            El catálogo se arma solo con las gorras que tengan stock. Agrega productos con foto en Inventario.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 12 }}>
+            {disponibles.map((p) => (
+              <div key={p.id} className="kp-card" style={{ overflow: "hidden" }}>
+                <div style={{ aspectRatio: "1", background: C.verdeSuave, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  {photos[p.id] ? (
+                    <img src={photos[p.id]} alt={p.nombre} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <span style={{ fontSize: 40 }}>🧢</span>
+                  )}
+                </div>
+                <div style={{ padding: "10px 12px" }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: C.verdeClaro, textTransform: "uppercase", letterSpacing: ".06em" }}>{p.categoria}</div>
+                  <div style={{ fontWeight: 700, fontSize: 14, margin: "2px 0 6px" }}>{p.nombre}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span className="kp-display" style={{ fontWeight: 800, fontSize: 17, color: C.verde }}>
+                      {fmt(modo === "mayor" ? p.precioMayor : p.precioMenor)}
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: C.gris }}>Disponible</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ textAlign: "center", fontSize: 11.5, color: C.gris, marginTop: 18 }}>
+          KALLPA · Hecho con orgullo 🧢 · Consulta disponibilidad por WhatsApp
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   AJUSTES — respaldo de datos (exportar / importar)
+   ============================================================ */
+function Ajustes({ products, sales, moves, photos, onRestore, notify }) {
+  const fileRef = useRef(null);
+
+  const exportar = () => {
+    const data = { version: 1, exportadoEl: new Date().toISOString(), products, sales, moves, photos };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `kallpa-respaldo-${hoy()}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    notify("✅ Respaldo descargado");
+  };
+
+  const importar = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (!data || !Array.isArray(data.products)) throw new Error("Archivo inválido");
+        if (!confirm("Esto reemplazará todos los datos actuales de la app (inventario, ventas, egresos y fotos) con los del respaldo. ¿Continuar?")) return;
+        onRestore(data);
+      } catch (err) { alert("No se pudo leer el archivo. Verifica que sea un respaldo válido de Kallpa."); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+
+  return (
+    <div>
+      <h2 className="kp-display" style={{ fontSize: 22, fontWeight: 800, margin: "4px 0 14px", color: C.verdeOscuro }}>Ajustes y respaldo</h2>
+
+      <div className="kp-card" style={{ padding: 16, marginBottom: 12 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>📤 Descargar respaldo</div>
+        <div style={{ fontSize: 12.5, color: C.gris, marginBottom: 10 }}>
+          Guarda una copia de tu inventario, ventas, egresos y fotos en un archivo. Hazlo seguido para no perder tu negocio si cambias de celular o se borra el navegador.
+        </div>
+        <button className="kp-btn" style={{ background: C.verde, color: C.crema }} onClick={exportar}>Descargar respaldo (.json)</button>
+      </div>
+
+      <div className="kp-card" style={{ padding: 16 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>📥 Restaurar respaldo</div>
+        <div style={{ fontSize: 12.5, color: C.gris, marginBottom: 10 }}>
+          Reemplaza todos los datos actuales por los de un archivo de respaldo descargado antes. Úsalo con cuidado, no se puede deshacer.
+        </div>
+        <button className="kp-btn" style={{ background: C.hueso, color: C.tinta, border: `1.5px solid ${C.linea}` }} onClick={() => fileRef.current && fileRef.current.click()}>
+          Elegir archivo de respaldo
+        </button>
+        <input ref={fileRef} type="file" accept="application/json" onChange={importar} style={{ display: "none" }} />
+      </div>
+
+      <div style={{ fontSize: 11.5, color: C.gris, marginTop: 14, textAlign: "center" }}>
+        Los datos de Kallpa se guardan solo en este navegador. El respaldo es la única forma de llevarlos a otro dispositivo.
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   MODAL genérico
+   ============================================================ */
+function Modal({ title, children, onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(30,36,23,.5)", zIndex: 50, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={onClose}>
+      <div className="kp-card" style={{ width: "100%", maxWidth: 520, maxHeight: "92vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: "18px 18px 26px", background: C.crema }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div className="kp-display" style={{ fontSize: 19, fontWeight: 800, color: C.verdeOscuro }}>{title}</div>
+          <button className="kp-btn" style={{ background: "transparent", fontSize: 20, padding: "4px 10px", color: C.gris }} onClick={onClose} aria-label="Cerrar">✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<KallpaCRM />);
+</script>
+</body>
+</html>
